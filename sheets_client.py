@@ -3,12 +3,90 @@ from deep_translator import GoogleTranslator
 import pandas as pd
 from collections import defaultdict
 from datetime import datetime
+from openpyxl.utils import get_column_letter
+from openpyxl import load_workbook
+import time
+from typing import Dict, Set, List, Optional
+
 
 CLIENTOKEN = "E0D439EE522F44368DC78E1BFB03710C-D24FB11DBE31D4621C4817E028D9E1D"
 ACCESSTOKEN = "C66EF7B239D24632943D115EDE9CB810-EA00F8FD8294692C940F6B5A8F9453D"
 HEADERS = {"Content-Type": "application/json"}
 START_DATE = "2025-05-06T01:00:00Z"
 END_DATE = "2025-05-08T23:00:00Z"
+
+def adjust_column_widths(worksheet, df):
+    column_config = {
+    
+                'columnas_cortas': {
+                    'columns': [
+                        'Numero', 'Estado', 'Recuento noches', 'Cantidad de Personas', 
+                        'Recuento camas', 'Numero habitación', 'Precio', 'Importe total',
+                        'Tipo tarjeta', 'Nacionalidad'
+                    ],
+                        'factor': 1.3,
+                        'margin': 3,
+                        'min_width': 12,
+                        'max_width': 20},
+
+                'columnas_largas': {
+                    'columns': [
+                        'Correo', 'Direccion', 'Productos', 'RecibeCorreosMarketing',
+                        'Tipo habitación'
+                    ],
+                        'factor': 1.2,
+                        'margin': 5,
+                        'min_width': 25,
+                        'max_width': 60},
+    
+                'columnas_fechas': {
+                    'columns': [
+                        'Fecha de creación', 'Fecha de actualización', 'Fecha llegada', 
+                        'Fecha salida', 'Fecha vencimiento'
+                    ],
+                        'factor': 1.1,
+                        'margin': 2,
+                        'min_width': 18,
+                        'max_width': 25},
+    
+    
+                'columnas_texto_medio': {
+                    'columns': [
+                        'Grupo', 'Apellido', 'Nombre', 'Teléfono', 'tarifa', 'Numero de tarjeta',
+                        'motivo de la reserva'
+                    ],
+                        'factor': 1.4,
+                        'margin': 4,
+                        'min_width': 15,
+                        'max_width': 35}
+                    
+                            }
+    default_config = {
+                        'factor': 1.5,
+                        'margin': 5,
+                        'min_width': 15,
+                        'max_width': 40
+                    }
+    
+    def get_column_config(column_name, column_config, default_config):
+        for category, config in column_config.items():
+            if column_name in config['columns']:
+                return config
+        return default_config 
+
+    def calculate_column_width(max_length, config):
+        calculated_width = max_length * config['factor']+ config['margin']
+        return max(min(calculated_width, config['max_width']), config['min_width'])
+    for i, column_name in enumerate(df.columns):
+        max_length = len(column_name)
+        column_letter = get_column_letter(i + 1)
+        for row_data in df[column_name]:
+            cell_value = str(row_data) if row_data is not None else ""
+            max_length = max(max_length, len(cell_value))
+
+        config = get_column_config(column_name, column_config, default_config)
+        adjusted_width = calculate_column_width(max_length, config)
+        worksheet.column_dimensions[column_letter].width = adjusted_width
 
 def get_mews_reservations():
     url_reservations = "https://api.mews-demo.com/api/connector/v1/reservations/getAll/2023-06-06"
@@ -44,13 +122,12 @@ def get_mews_reservations():
             account_ids = {reserva.get("AccountId") for reserva in reservations if reserva.get("AccountId")}
             counts = [person["Count"] for reservation in data.get("Reservations", []) for person in reservation.get("PersonCounts", [])]
             productos_por_reserva = get_products_by_reservation(reservation_ids, service_ids)
-            
-                
+            rate_ids = {res.get("RateId") for res in reservations if res.get("RateId")}
+            rate_prices = get_rates_pricing_batch(rate_ids)
             
                             
             group_names = get_group_names(group_ids)
             customer_info = get_customer_names(account_ids)
-            payments_info_by_reservation  = get_payments(reservation_ids)
             rate_name = get_rates_names()
             
         
@@ -59,71 +136,60 @@ def get_mews_reservations():
                 service_id = reserva.get("ServiceId")
                 reservation_ids = [reserva["Id"]for reserva in reservations]
                 reservation_id = reserva["Id"]
+                
                                
                 if not reserva.get("CreditCardId"):
                     tipo_tarjeta, numero_tarjeta, expiracion_tarjeta = "", "", ""
                 else:
                     tipo_tarjeta, numero_tarjeta, expiracion_tarjeta = get_credit_card()
-                
-                fecha_llegada_str = reserva.get("ScheduledStartUtc")
-                fecha_salida_str = reserva.get("ScheduledEndUtc")
-            try:
-                   
-                    fecha_llegada = datetime.strptime(fecha_llegada_str, "%Y-%m-%dT%H:%M:%SZ").date()
-                    fecha_salida = datetime.strptime(fecha_salida_str,"%Y-%m-%dT%H:%M:%SZ").date()
-                    recuento_noches = (fecha_salida - fecha_llegada).days
                     
-            except Exception as e: 
-                print(f"Error al calcular noches para reserva {reserva.get('Number')}: {e}")
-                recuento_noches = "N/A"
-            
-            
            
             reservas_filtradas = [
                 {
-                    "Numero": reserva.get("Number", "N/A"),
-                    "Grupo": group_names.get(reserva.get("GroupId"), "N/A"),
-                    "Apellido": customer_info.get(reserva.get("AccountId"), {}).get("Apellido", "N/A"),
-                    "Nombre": customer_info.get(reserva.get("AccountId"), {}).get("Nombre", "N/A"),
-                    "Correo": customer_info.get(reserva.get("AccountId"), {}).get("Correo", "N/A"),
-                    "Teléfono": customer_info.get(reserva.get("AccountId"), {}).get("Telefono", "N/A"),
-                    "Direccion": customer_info.get(reserva.get("AccountId"), {}).get("Direccion", "N/A"),
-                    "Nacionalidad": customer_info.get(reserva.get("AccountId"), {}).get("Nacionalidad", "N/A"),
-                    "RecibeCorreosMarketing": customer_info.get(reserva.get("AccountId"), {}).get("Enviar correos electronicos de Marketing", "N/A"),
-                    "Estado": reserva.get("State", "N/A"), 
-                    "Fecha de creación": reserva.get("CreatedUtc", "N/A"),
-                    "Fecha de actualización": reserva.get("UpdatedUtc", "N/A"),
-                    "Fecha llegada": reserva.get("ScheduledStartUtc", "N/A"),
-                    "Fecha salida": reserva.get("ScheduledEndUtc", "N/A"),
-                    "Recuento noches": recuento_noches,
-                    "Personas": sum(person["Count"] for person in reserva.get("PersonCounts", []) if "Count" in person),
+                    "Numero": reserva.get("Number", ""),
+                    "Grupo": group_names.get(reserva.get("GroupId"), ""),
+                    "Apellido": customer_info.get(reserva.get("AccountId"), {}).get("Apellido", ""),
+                    "Nombre": customer_info.get(reserva.get("AccountId"), {}).get("Nombre", ""),
+                    "Correo": customer_info.get(reserva.get("AccountId"), {}).get("Correo", ""),
+                    "Teléfono": customer_info.get(reserva.get("AccountId"), {}).get("Telefono", ""),
+                    "Direccion": customer_info.get(reserva.get("AccountId"), {}).get("Direccion", ""),
+                    "Nacionalidad": customer_info.get(reserva.get("AccountId"), {}).get("Nacionalidad", ""),
+                    "RecibeCorreosMarketing": customer_info.get(reserva.get("AccountId"), {}).get("Enviar correos electronicos de Marketing", ""),
+                    "Estado": reserva.get("State", ""), 
+                    "Fecha de creación": reserva.get("CreatedUtc", ""),
+                    "Fecha de actualización": reserva.get("UpdatedUtc", ""),
+                    "Fecha llegada": reserva.get("ScheduledStartUtc", ""),
+                    "Fecha salida": reserva.get("ScheduledEndUtc", ""),
+                    "Recuento noches": calcular_noches(reserva),                    
+                    "Cantidad de Personas": sum(person["Count"] for person in reserva.get("PersonCounts", []) if "Count" in person),
+                    "Recuento camas": calcular_camas(reserva),
                     "Tipo habitación": get_room_name(reserva.get("ServiceId"), reserva.get("RequestedResourceCategoryId")),
-                    "Número habitación": get_room_number(reserva.get("AssignedResourceId")),
+                    "Numero habitación": get_room_number(reserva.get("AssignedResourceId")),
                     "tarifa": rate_name.get(reserva.get("RateId")),
-                    "Precio": get_rates_pricing(reserva.get("RateId")),
-                    "Producto": productos_por_reserva.get(reserva.get("Id"),"N/A"),
+                    "Productos": productos_por_reserva.get(reserva.get("Id"),""),
+                    "Precio": rate_prices.get(reserva.get("RateId"), ""),
+                    "Importe total": calcular_importe_total(rate_prices.get(reserva.get("RateId")), calcular_noches(reserva)), 
                     "Tipo tarjeta": tipo_tarjeta,
                     "Numero de tarjeta": numero_tarjeta,
                     "Fecha vencimiento": expiracion_tarjeta,
-                    "Pago": format_payment(payments_info_by_reservation.get(reserva.get("Id"))),
-                    "motivo de la reserva": reserva.get("Purpose", "N/A")
-                    }
-                    
-            for reserva in reservations
-            ]
-            print(f"Fecha llegada raw: '{fecha_llegada_str}' (tipo: {type(fecha_llegada_str)})")
-            print(f"Fecha salida raw: '{fecha_salida_str}' (tipo: {type(fecha_salida_str)})")
-                
-            
-            df = pd.DataFrame(reservas_filtradas)
-            df.to_excel("reservas_mews.xlsx", index=False)  
-            print("Archivo 'reservas_mews.xlsx' guardado exitosamente.")
-        else:
-            print("No se encontraron reservas en la respuesta.")
-            
-    else:
-        print(f"Error {response.status_code}: {response.text}")
+                    "motivo de la reserva": reserva.get("Purpose", "")
+                }
+                for reserva in reservations
 
+            ]
+              
+        df = pd.DataFrame(reservas_filtradas)
+        output_filename = "reservas_mews.xlsx"
+        df.to_excel(output_filename, index=False, sheet_name="Reservas")
+        workbook = load_workbook(output_filename)
+        worksheet = workbook["Reservas"]
+        adjust_column_widths(worksheet, df)
+
+        workbook.save(output_filename)
+        print(f"Archivo '{output_filename}' guardado exitosamente")
+        categories_used = {}
+            
+        
 def get_group_names(group_ids):
     if not group_ids:
         return {}
@@ -151,7 +217,7 @@ def get_group_names(group_ids):
 def translate_country(country_name):
     
     if not country_name:
-        return "N/A"
+        return ""
     try:
         return GoogleTranslator(source="en", target="es").translate(country_name)
     except Exception:
@@ -197,8 +263,8 @@ def get_customer_names(account_ids):
 
         customer_info = {}
         for customer in customers_data:
-            customer_id = customer.get("Id", "N/A")
-            nationality_code = customer.get("NationalityCode", "N/A")
+            customer_id = customer.get("Id", "")
+            nationality_code = customer.get("NationalityCode", "")
             country_name = countries_data.get(nationality_code)
     
             
@@ -216,10 +282,10 @@ def get_customer_names(account_ids):
                 send_marketing_emails = "Yes"
            
             customer_info[customer_id] = {
-                "Nombre": customer.get("FirstName", "N/A"),
-                "Apellido": customer.get("LastName", "N/A"),
-                "Correo": customer.get("Email","N/A"),
-                "Telefono": customer.get("Phone","N/A"),
+                "Nombre": customer.get("FirstName", ""),
+                "Apellido": customer.get("LastName", ""),
+                "Correo": customer.get("Email",""),
+                "Telefono": customer.get("Phone",""),
                 "Direccion": formatted_address,
                 "Nacionalidad": country_name,
                 "Enviar correos electronicos de Marketing": send_marketing_emails
@@ -246,12 +312,16 @@ def get_rates_names():
         print(f"Error al obtener nombres de tarifas: {response.status_code} - {response.text}")
         return {}
 
-def get_rates_pricing(rate_id):
-    if not rate_id:
-        return None
+def get_rates_pricing_batch(rate_ids: Set[str], max_retries: int = 5):
+    if not rate_ids:
+        return {}
     
-    url_rates = "https://api.mews-demo.com/api/connector/v1/rates/getpricing"
-    
+    url_rates = "https://api.mews-demo.com/api/connector/v1/rates/getPricing"
+    rate_prices = {}
+   
+    for rate_id in rate_ids: 
+        if not rate_id:
+            continue
     payload_rates = {
         "ClientToken": CLIENTOKEN,
         "AccessToken": ACCESSTOKEN, 
@@ -259,49 +329,40 @@ def get_rates_pricing(rate_id):
         "StartUtc": START_DATE,
         "EndUtc": END_DATE    
     }
-    response = requests.post(url_rates, json=payload_rates, headers=HEADERS)
-    
-    if response.status_code == 200:
+    wait_time = 1
+    success = False
+    for attempt in range(max_retries):
         try:
-            data = response.json()
-        except ValueError:
-            print(f"Error al convertir respuesta de {rate_id} a JSON.")
-            return None
-        
-        if "BaseAmountPrices" in data and data["BaseAmountPrices"]:
-            price_info = data["BaseAmountPrices"][0]
-            currency_map = {"GBP": "£", "USD": "$"}
-            currency_symbol = currency_map.get(price_info.get("Currency"), price_info.get("Currency", "N/A"))
-            gross_value = price_info.get("GrossValue", 0)
-            
-            return f"{currency_symbol} {gross_value}"
+            response = requests.post(url_rates, json=payload_rates, headers=HEADERS)
     
-    print(f"Error {response.status_code} al obtener precios de {rate_id}: {response.text}")
-    return None
+            if response.status_code == 200:
+                data = response.json()
+                currency_map = {"GBP": "£", "USD": "$", "EUR": "€"}
 
-def get_all_rates_prices(rate_ids):
-    
-    all_prices = []
-    
-    for rate_id in rate_ids:
-        if isinstance(rate_id, str):  
-            price = get_rates_pricing(rate_id)
-            if price:
-                all_prices.append(price)
-            
-        else:
-            print(f"⚠️ RateId inválido: {rate_id} (debe ser string)")
-    
-    return all_prices
+                for item in data.get("BaseAmountPrices", []):
+                    currency = item.get('Currency', '')
+                    gross_value = item.get('GrossValue', 0)
+                    symbol = currency_map.get(currency, currency)
+                    rate_prices[item.get("RateId")] = f"{symbol} {gross_value}"
+                success = True
+                break
+            elif response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", wait_time))
+                print(f"⏳ Rate limit alcanzado para RateId {rate_id}. Esperando {retry_after} segundos...")
+                time.sleep(retry_after)
+                wait_time = min(wait_time * 2, 60)
+            else: 
+                print(f"❌ Error {response.status_code} para RateId {rate_id}: {response.text}")
+                break
+        except requests.exceptions.RequestException as e: 
+            print(f"Error de conexion para RateId {rate_id}:{e}")
+            break
+    if not success:
+        print(f" Fallo obtener precio para RateId{rate_id}despues de {max_retries} intentos")
 
-rate_ids = [
-    "89e8b0c9-3526-4773-8040-b235009cb80b",
-    "b8c1b67f-704e-4112-8e68-b15b0094d112",
-    "ac0e8ce6-5078-4a55-be60-b19600a4314d",
-    "146714c4-ebb1-4c36-9b59-b13f00ac1d39" 
-]
-               
-prices = get_all_rates_prices(rate_ids)
+    time.sleep (0.5)
+    return rate_prices
+
 
 def get_credit_card(Credit_card): 
     url_card = "https://api.mews-demo.com/api/connector/v1/creditCards/getAll"
@@ -324,49 +385,7 @@ def get_credit_card(Credit_card):
 
     return "", "", ""
 
-def get_payments(reservation_ids): 
-    url_payment = "https://api.mews-demo.com/api/connector/v1/payments/getAll"
-    payload_payment = {
-        "ClientToken": CLIENTOKEN,
-        "AccessToken": ACCESSTOKEN,
-        "UpdatedUtc": {"StartUtc": START_DATE, 
-                        "EndUtc": END_DATE},
-        "Limitation": {"Count": 30}         
-    }
-    response = requests.post(url_payment, json=payload_payment, headers=HEADERS)
-    
-    payments_by_reservation ={}
-
-    if response.status_code == 200:
-        data = response.json()
-        for payment in data.get("Payments",):
-            reservation_id = payment.get("ReservationId")
-            amount_info = payment.get("Amount", {})
-            payment_data = {
-                "Currency": amount_info.get("Currency"),
-                "GrossValue": amount_info.get("GrossValue")
-        }
-            if reservation_id in reservation_ids:
-                if reservation_id not in payments_by_reservation:
-                    payments_by_reservation[reservation_id]  = []
-                payments_by_reservation[reservation_id].append(payment_data)
-    else:
-        print(f"Error al obtener pagos: {response.status_code} - {response.text}")
-
-    return payments_by_reservation
-
-def format_payment(payments):
-    if payments and isinstance(payments, list):
-        formatted_payments = []
-        for payment in payments:
-            currency = payment.get("Currency")
-            gross_value = payment.get("GrossValue")
-            if currency and gross_value is not None:
-                formatted_payments.append(f"{abs(gross_value)} {currency}")
-        return ", ".join(formatted_payments) if formatted_payments else "N/A"
-    return "N/A"
-        
-    
+          
 def get_room_name(service_id, resource_category_id):
     url = "https://api.mews-demo.com/api/connector/v1/resourceCategories/getAll"
     
@@ -443,38 +462,69 @@ def get_products_by_reservation(reservation_ids, service_ids):
     else:
         print(f"Error al obtener OrderItems: {response.status_code} - {response.text}")
         return {}
-        
     
-# def get_product(service_ids):
-#     url_products= "https://api.mews-demo.com/api/connector/v1/products/getAll"
-#     payload = {
-#         "ClientToken": CLIENTOKEN,
-#         "AccessToken": ACCESSTOKEN,
-#         "ServiceIds": list(service_ids),
-#         "UpdatedUtc": {"StartUtc": START_DATE, 
-#                         "EndUtc": END_DATE},
-#         "Limitation": {"Count": 40}
-#     }
-#     response = requests.post(url_products, json=payload, headers=HEADERS)
-    
-#     if response.status_code == 200:
-#         products_data = response.json().get("Products", [])
-        
-        
-#         product_names = []
-#         for producto in products_data:
-#             if producto.get("IsActive"):
-#                 name_dict = producto.get("Names", {})
-#                 name = name_dict.get("en-US") or list(name_dict.values())[0]  
-#                 if name:
-#                     product_names.append(name)
+def calcular_noches(reserva):
 
+    try: 
+        fecha_llegada_str = reserva.get("ScheduledStartUtc")
+        fecha_salida_str = reserva.get("ScheduledEndUtc")
+        if not fecha_llegada_str or not fecha_salida_str:
+            return ""
+        formatos = [
+            "%Y-%m-%dT%H:%M:%SZ",      
+            "%Y-%m-%dT%H:%M:%S.%fZ",   
+            "%Y-%m-%dT%H:%M:%S",       
+        ]
+        fecha_llegada = None
+        fecha_salida = None
+        for formato in formatos:
+            try:
+                fecha_llegada = datetime.strptime(fecha_llegada_str.strip(), formato).date()
+                break
+            except ValueError:
+                continue
+        for formato in formatos:
+            try:
+                fecha_salida = datetime.strptime(fecha_salida_str.strip(), formato).date()
+                break
+            except ValueError:
+                continue
         
-#         return ", ".join(sorted(set(product_names)))
+        if fecha_llegada and fecha_salida:
+            noches = (fecha_salida - fecha_llegada).days
+            return noches if noches >= 0 else ""
+        else:
+            return ""
+            
+    except Exception as e:
+        print(f"Error al calcular noches para reserva {reserva.get('Number')}: {e}")
+        return ""
+def calcular_camas(reserva):
     
-#     else:
-#         print(f"Error al obtener productos: {response.status_code} - {response.text}")
-#         return "No disponible"
+    try:
+        noches = calcular_noches(reserva)
+        personas = sum(person["Count"] for person in reserva.get("PersonCounts", []) if "Count" in person)
+        
+        if noches == "" or personas == 0:
+            return ""
+        
+        return noches * personas
+    except Exception as e:
+        print(f"Error al calcular persona-noches para reserva {reserva.get('Number')}: {e}")
+        return ""
+
+def calcular_importe_total(precio_str, noches):
+    try:
+        if not precio_str or not isinstance(noches, int):
+            return ""
+        simbolo, valor_str = precio_str.split()
+        valor = float(valor_str.replace(',', ''))
+        return f"{simbolo} {round(valor * noches, 2)}"
+    except Exception as e:
+        print(f"Error al calcular importe total: {e}")
+        return ""
+
+
 
 if __name__ == "__main__":
     get_mews_reservations()
